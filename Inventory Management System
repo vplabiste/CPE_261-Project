@@ -1,0 +1,929 @@
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+public abstract class User
+{
+    public string Username { get; set; }
+    public string Password { get; set; }
+    public string Role { get; set; }
+}
+
+public class Manager : User
+{
+    public Manager()
+    {
+        Role = "Manager";
+    }
+}
+
+public class Cashier : User
+{
+    public Cashier()
+    {
+        Role = "Cashier";
+    }
+}
+
+public class Product
+{
+    public int ProductId { get; set; }
+    public string Name { get; set; }
+    public decimal Price { get; set; }
+    public int StockQuantity { get; set; }
+    public string Category { get; set; }
+}
+
+public class Sale
+{
+    public int SaleId { get; set; }
+    public List<Product> Products { get; set; }
+    public decimal TotalAmount { get; set; }
+    public DateTime SaleDateTime { get; set; }
+    public Sale()
+    {
+        Products = new List<Product>();
+        SaleDateTime = DateTime.Now;
+    }
+}
+
+public class InventoryManager
+{
+    public List<Product> products;
+    private List<Sale> sales;
+    private int lastSaleId;
+
+    public InventoryManager()
+    {
+        products = new List<Product>();
+        sales = new List<Sale>();
+        lastSaleId = 0;
+        LoadFromDatabase();
+    }
+
+    public bool AddProduct(Product product)
+    {
+        products.Add(product);
+        SaveToDatabase();
+        return true;
+    }
+
+    public bool MakeSale(int productId, int quantity)
+    {
+        var product = products.Find(p => p.ProductId == productId);
+        if (product != null && quantity > 0 && quantity <= product.StockQuantity)
+        {
+            var sale = new Sale
+            {
+                SaleId = GenerateNewSaleId(),
+                TotalAmount = product.Price * quantity
+            };
+            UpdateProductStock(productId, product.StockQuantity - quantity);
+            for (int i = 0; i < quantity; i++)
+            {
+                sale.Products.Add(product);
+            }
+            sales.Add(sale);
+            SaveSaleToFile(sale);
+            return true;
+        }
+        return false;
+    }
+
+    private void SaveSaleToFile(Sale sale)
+    {
+        try
+        {
+            var saleLines = new List<string>
+            {
+                $"{sale.SaleId},{sale.SaleDateTime},{sale.TotalAmount},{string.Join(";", sale.Products.Select(p => p.ProductId))}"
+            };
+            File.WriteAllLines($"sale_{sale.SaleId}.txt", saleLines);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error saving sale to file: {ex.Message}");
+        }
+    }
+
+    public bool RefundSale(int saleId)
+    {
+        try
+        {
+            var saleFilePath = $"sale_{saleId}.txt";
+            if (File.Exists(saleFilePath))
+            {
+                File.Delete(saleFilePath);
+                sales.RemoveAll(s => s.SaleId == saleId);
+                Console.WriteLine($"Sale receipt {saleId} refunded successfully.");
+                return true;
+            }
+            else
+            {
+                Console.WriteLine("Sale receipt not found.");
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error processing refund: {ex.Message}");
+            return false;
+        }
+    }
+    public List<int> GetAllSaleIds()
+    {
+        return sales.Select(s => s.SaleId).ToList();
+    }
+
+
+    public void SaveToDatabase()
+    {
+        try
+        {
+            var inventoryLines = products.Select(p =>
+            $"{p.ProductId},{p.Name},{p.Price},{p.StockQuantity},{p.Category}");
+            File.WriteAllLines("inventory.txt", inventoryLines);
+            var salesLines = sales.Select(s =>
+            $"{s.SaleId},{s.SaleDateTime},{s.TotalAmount},{string.Join(";", s.Products.Select(p =>
+            p.ProductId))}");
+            File.WriteAllLines("sales.txt", salesLines);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error saving to database: {ex.Message}");
+        }
+    }
+
+    public void LoadFromDatabase()
+    {
+        try
+        {
+            if (File.Exists("inventory.txt"))
+            {
+                var lines = File.ReadAllLines("inventory.txt");
+                foreach (var line in lines)
+                {
+                    var parts = line.Split(',');
+                    products.Add(new Product
+                    {
+                        ProductId = int.Parse(parts[0]),
+                        Name = parts[1],
+                        Price = decimal.Parse(parts[2]),
+                        StockQuantity = int.Parse(parts[3]),
+                        Category = parts[4]
+                    });
+                }
+            }
+            if (File.Exists("sales.txt"))
+            {
+                var saleFiles = Directory.GetFiles(Directory.GetCurrentDirectory(), "sale_*.txt");
+                foreach (var saleFile in saleFiles)
+                {
+                    var lines = File.ReadAllLines(saleFile);
+                    foreach (var line in lines)
+                    {
+                        var parts = line.Split(',');
+                        var sale = new Sale
+                        {
+                            SaleId = int.Parse(parts[0]),
+                            SaleDateTime = DateTime.Parse(parts[1]),
+                            TotalAmount = decimal.Parse(parts[2])
+                        };
+                        var productIds = parts[3].Split(';').Select(int.Parse).ToList();
+                        foreach (var productId in productIds)
+                        {
+                            var product = products.Find(p => p.ProductId == productId);
+                            if (product != null)
+                            {
+                                sale.Products.Add(product);
+                            }
+                        }
+                        sales.Add(sale);
+                        lastSaleId = Math.Max(lastSaleId, sale.SaleId);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading from database: {ex.Message}");
+        }
+    }
+
+    public decimal CalculateTotal(List<Product> productsToSell)
+    {
+        return productsToSell.Sum(p => p.Price);
+    }
+
+    private int GenerateNewSaleId()
+    {
+        return ++lastSaleId;
+    }
+
+    public int GetCurrentStock(int productId)
+    {
+        var product = products.Find(p => p.ProductId == productId);
+        return product?.StockQuantity ?? 0;
+    }
+
+    public void UpdateProductStock(int productId, int newQuantity)
+    {
+        var product = products.Find(p => p.ProductId == productId);
+        if (product != null)
+        {
+            product.StockQuantity = newQuantity;
+        }
+    }
+    public void DisplayInventory() 
+    {
+        Console.Clear();
+        int maxLength = products.Max(p => p.Name.Length);
+        Console.WriteLine("Inventory:");
+        Console.WriteLine(new string('-', 100 + maxLength));
+        Console.WriteLine($"{"Product ID",-12} {"Name",-70} {"Price",-12} {"Stock",-8} {"Category",-15}");
+        Console.WriteLine(new string('-', 100 + maxLength));
+        foreach (var product in products)
+        {
+            Console.WriteLine($"{product.ProductId,-12} {product.Name,-70} ₱{product.Price,-12:F2} {product.StockQuantity,-8} {product.Category,-15}");
+        }
+        Console.WriteLine(new string('-', 100 + maxLength));
+    }
+    public void DisplaySaleHistory()
+    {
+        Console.Clear();
+        Console.WriteLine("Sale History:");
+        Console.WriteLine("--------------------------------------------------------------------------------------------------------");
+        Console.WriteLine($"{"Sale ID",-10} {"Date",-25} {"Total Amount",-15}");
+        Console.WriteLine("--------------------------------------------------------------------------------------------------------");
+        foreach (var sale in sales)
+        {
+            Console.WriteLine($"{sale.SaleId,-10} {sale.SaleDateTime,-25} ₱{sale.TotalAmount,-15:F2}");
+            Console.WriteLine($"{"Product ID",-12} {"Name",-70} {"Price",-10}");
+            Console.WriteLine("--------------------------------------------------------------------------------------------------------");
+            foreach (var product in sale.Products)
+            {
+                Console.WriteLine($"{product.ProductId,-12} {product.Name,-70} ₱{product.Price,-10:F2}");
+            }
+            Console.WriteLine("--------------------------------------------------------------------------------------------------------");
+        }
+        Console.WriteLine("Press any key to continue...");
+        Console.ReadKey();
+    }
+
+    public List<Product> SearchProduct(string name)
+    {
+        return products.Where(p => p.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) > 0).ToList();
+    }
+
+    public List<Product> FilterProductsByCategory(string category)
+    {
+        return products.Where(p => p.Category.IndexOf(category, StringComparison.OrdinalIgnoreCase) > 0).ToList();
+    }
+
+    public bool RemoveProduct(int productId)
+    {
+        var product = products.Find(p => p.ProductId == productId);
+        if (product != null)
+        {
+            products.Remove(product);
+            SaveToDatabase();
+            return true;
+        }
+        return false;
+    }
+    public void PrintProductsByCategory(string category)
+    {
+        int maxLength = products.Max(p => p.Name.Length);
+        Console.WriteLine(new string('-', 100 + maxLength));
+        Console.WriteLine($"Products in Category: {category}");
+        Console.WriteLine(new string('-', 100 + maxLength));
+        Console.WriteLine($"{"Product ID",-12} {"Name",-70} {"Price",-12} {"Stock",-8} {"Category",-15}");
+        Console.WriteLine(new string('-', 100 + maxLength));
+
+        var filteredProducts = FilterProductsByCategory(category);
+        if (filteredProducts.Any())
+        {
+            foreach (var product in filteredProducts)
+            {
+                Console.WriteLine($"{product.ProductId,-12} {product.Name,-70} ₱{product.Price,-12:F2} {product.StockQuantity,-8} {product.Category,-15}");
+            }
+        }
+        else
+        {
+            Console.WriteLine("No products found in this category.");
+        }
+
+        Console.WriteLine(new string('-', 100 + maxLength));
+    }
+    public void PrintProductsBySearch(string searchName)
+    {
+        int maxLength = products.Max(p => p.Name.Length);
+        Console.WriteLine(new string('-', 100 + maxLength));
+        Console.WriteLine($"Search Results for: {searchName}");
+        Console.WriteLine(new string('-', 100 + maxLength));
+        Console.WriteLine($"{"Product ID",-12} {"Name",-70} {"Price",-12} {"Stock",-8} {"Category",-15}");
+        Console.WriteLine(new string('-', 100 + maxLength));
+
+        var foundProducts = SearchProduct(searchName);
+        if (foundProducts.Any())
+        {
+            foreach (var product in foundProducts)
+            {
+                Console.WriteLine($"{product.ProductId,-12} {product.Name,-70} ₱{product.Price,-12:F2} {product.StockQuantity,-8} {product.Category,-15}");
+            }
+        }
+        else
+        {
+            Console.WriteLine("No products found in this category.");
+        }
+
+        Console.WriteLine(new string('-', 100 + maxLength));
+    }
+}
+
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        Console.SetWindowSize(Console.LargestWindowWidth, Console.LargestWindowHeight);
+        Console.OutputEncoding = System.Text.Encoding.UTF8;
+        var inventoryManager = new InventoryManager();
+        User user = null;
+        int auth;
+        while (true)
+        {
+            Console.Clear();
+            var shopString = @"
+                                                            ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+                                                          ░░░░      ░░  ░░░░  ░        ░        ░        ░░░░░░  ░░░░  ░░      ░░       ░░       ░░        ░   ░░░  ░░      ░░░░
+                                                        ▒▒▒▒▒  ▒▒▒▒▒▒▒  ▒▒▒▒  ▒▒▒▒  ▒▒▒▒  ▒▒▒▒▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒  ▒▒▒▒  ▒  ▒▒▒▒  ▒  ▒▒▒▒  ▒  ▒▒▒▒  ▒  ▒▒▒▒▒▒▒    ▒▒  ▒  ▒▒▒▒▒▒▒▒▒▒▒
+                                                      ▓▓▓▓▓▓▓▓      ▓▓        ▓▓▓▓  ▓▓▓▓      ▓▓▓▓▓▓  ▓▓▓▓▓▓▓▓▓        ▓  ▓▓▓▓  ▓       ▓▓       ▓▓      ▓▓▓  ▓  ▓  ▓▓      ▓▓▓▓▓▓▓▓
+                                                         ██████████  █  ████  ████  ████  ██████████  █████████  ████  █        █  ███████  ███████  ███████  ██    ███████  █████
+                                                          ████      ██  ████  █        █  ██████████  █████████  ████  █  ████  █  ███████  ███████        █  ███   ██      ████
+                                                            ██████████████████████████████████████████████████████████████████████████████████████████████████████████████████                                                                                                                  
+
+                                .----------------. .----------------. .----------------. .----------------. .----------------. .----------------. .----------------. .----------------. .----------------. 
+                                | .--------------. | .--------------. | .--------------. | .--------------. | .--------------. | .--------------. | .--------------. | .--------------. | .--------------. |
+                                | | ____    ____ | | |     ____     | | |  _________   | | |     ____     | | |  _______     | | |    _______   | | |  ____  ____  | | |     ____     | | |   ______     | |
+                                | ||_   \  /   _|| | |   .'    `.   | | | |  _   _  |  | | |   .'    `.   | | | |_   __ \    | | |   /  ___  |  | | | |_   ||   _| | | |   .'    `.   | | |  |_   __ \   | |
+                                | |  |   \/   |  | | |  /  .--.  \  | | | |_/ | | \_|  | | |  /  .--.  \  | | |   | |__) |   | | |  |  (__ \_|  | | |   | |__| |   | | |  /  .--.  \  | | |    | |__) |  | |
+                                | |  | |\  /| |  | | |  | |    | |  | | |     | |      | | |  | |    | |  | | |   |  __ /    | | |   '.___`-.   | | |   |  __  |   | | |  | |    | |  | | |    |  ___/   | |
+                                | | _| |_\/_| |_ | | |  \  `--'  /  | | |    _| |_     | | |  \  `--'  /  | | |  _| |  \ \_  | | |  |`\____) |  | | |  _| |  | |_  | | |  \  `--'  /  | | |   _| |_      | |
+                                | ||_____||_____|| | |   `.____.'   | | |   |_____|    | | |   `.____.'   | | | |____| |___| | | |  |_______.'  | | | |____||____| | | |   `.____.'   | | |  |_____|     | |
+                                | |              | | |              | | |              | | |              | | |              | | |              | | |              | | |              | | |              | |
+                                | '--------------' | '--------------' | '--------------' | '--------------' | '--------------' | '--------------' | '--------------' | '--------------' | '--------------' |
+                                 '----------------' '----------------' '----------------' '----------------' '----------------' '----------------' '----------------' '----------------' '----------------' ";
+            Console.WriteLine("\n\n\n\n" + shopString);
+            Console.Write(@"
+                                                                                                        Login:
+                                                                                                        ---------
+                                                                                                        Username: ");
+            var username = Console.ReadLine();
+            Console.Write(@"                                                                                                        Password: ");
+            var password = ReadPasswordFromConsole();
+            if (username == "admin" && password == "admin123")
+            {
+                user = new Manager { Username = username, Password = password };
+                auth = 1;
+                break;
+            }
+            else if (username == "cashier" && password == "cash123")
+            {
+                user = new Cashier { Username = username, Password = password };
+                auth = 2;
+                break;
+            }
+            else
+            {
+                Console.WriteLine(Environment.NewLine + "Invalid username or password. Please try again.");
+                Console.WriteLine("Press any key to continue...");
+                Console.ReadKey();
+            }
+        }
+        while (true)
+        {
+            if (auth == 1)
+            {
+                Console.Clear();
+                var mainMenuString = @"
+                                                                                    .---------------------------------------------------------------------. 
+                                                                                    | .-----------------------------------------------------------------. |
+                                                                                    | |                            Main Menu                            | |
+                                                                                    | |-----------------------------------------------------------------| |
+                                                                                    | |                                                                 | |
+                                                                                    | |                     1. Add product                              | |
+                                                                                    | |                     2. Make sale                                | |
+                                                                                    | |                     3. View inventory                           | |
+                                                                                    | |                     4. View sale history                        | |
+                                                                                    | |                     5. Remove product                           | |
+                                                                                    | |                     6. Refund                                   | |
+                                                                                    | |                     7. Exit                                     | |
+                                                                                    | |                                                                 | |
+                                                                                    | '-----------------------------------------------------------------' |
+                                                                                     '--------------------------------------------------------------------' ";
+                Console.WriteLine(mainMenuString + Environment.NewLine + Environment.NewLine);
+                Console.Write(@"                                                                                                               Enter your Choice: ");
+                var choice = Console.ReadLine();
+                if (choice == "1")
+                {
+                    decimal price = 0;
+                    int stockQuantity = 0;
+                    Console.Clear();
+                    Console.WriteLine("Add Product:");
+                    Console.WriteLine("---------");
+                    Console.Write("Enter product category: ");
+                    var category = Console.ReadLine();
+                    Console.Write("Enter product name: ");
+                    var name = Console.ReadLine();
+                    while (true)
+                    {
+                        Console.Write("Enter product price: ");
+                        try
+                        {
+                            price = decimal.Parse(Console.ReadLine());
+                            if (price < 0)
+                            {
+                                Console.WriteLine("Price cannot be negative. Please enter a valid value.");
+                            }
+                            else
+                            {
+                                break;
+                            }
+                        }
+                        catch (FormatException)
+                        {
+                            Console.WriteLine("Invalid input. Please enter a numeric value for the price.");
+                        }
+                    }
+
+                    while (true)
+                    {
+                        Console.Write("Enter product stock quantity: ");
+                        try
+                        {
+                            stockQuantity = int.Parse(Console.ReadLine());
+                            if (stockQuantity < 0)
+                            {
+                                Console.WriteLine("Stock quantity cannot be negative. Please enter a valid value.");
+                            }
+                            else
+                            {
+                                break;
+                            }
+                        }
+                        catch (FormatException)
+                        {
+                            Console.WriteLine("Invalid input. Please enter an integer value for the stock quantity.");
+                        }
+                    }
+
+                    var newProduct = new Product
+                    {
+                        ProductId = inventoryManager.products.Count + 1,
+                        Name = name,
+                        Price = price,
+                        StockQuantity = stockQuantity,
+                        Category = category
+                    };
+
+                    try
+                    {
+                        if (inventoryManager.AddProduct(newProduct))
+                        {
+                            Console.WriteLine($"Product '{name}' with ID {newProduct.ProductId} added successfully!");
+                        }
+                        else
+                        {
+                            Console.WriteLine("Failed to add product.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"An error occurred: {ex.Message}");
+                    }
+
+                    Console.WriteLine("Press any key to continue...");
+                    Console.ReadKey();
+                    Console.Clear();
+                }
+                else if (choice == "2")
+                {
+                    while (true)
+                    {
+                        inventoryManager.DisplayInventory();
+                        int maxLength = inventoryManager.products.Max(p => p.Name.Length);
+                        Console.Write(@"
+                                                                                    .---------------------------------------------------------------------. 
+                                                                                    | .-----------------------------------------------------------------. |
+                                                                                    | |                            Choice                               | |
+                                                                                    | |-----------------------------------------------------------------| |
+                                                                                    | |                                                                 | |
+                                                                                    | |                     1. Filter Products by Category              | |
+                                                                                    | |                     2. Search Products                          | |
+                                                                                    | |                     3. Make Purchase                            | |                                             
+                                                                                    | |                     4. Exit                                     | |
+                                                                                    | |                                                                 | |
+                                                                                    | '-----------------------------------------------------------------' |
+                                                                                     '--------------------------------------------------------------------' ");
+                        Console.WriteLine(Environment.NewLine + Environment.NewLine);
+                        Console.Write(@"                                                                                                               Enter your Choice: ");
+                        var select = Console.ReadLine();
+                        if (select == "1")
+                        {
+                            Console.Clear();
+                            Console.Write("Enter category to filter: ");
+                            var category = Console.ReadLine();
+                            inventoryManager.PrintProductsByCategory(category);
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                        else if (select == "2")
+                        {
+                            Console.Clear();
+                            Console.Write("Enter product name to search: ");
+                            var searchName = Console.ReadLine();
+                            inventoryManager.PrintProductsBySearch(searchName);
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                        else if (select == "3")
+                        {
+                            Console.Write("Enter product ID: ");
+                            var productId = int.Parse(Console.ReadLine());
+                            Console.Write("Enter quantity: ");
+                            var quantity = int.Parse(Console.ReadLine());
+                            if (inventoryManager.MakeSale(productId, quantity))
+                            {
+                                Console.WriteLine("Sale completed successfully!");
+                            }
+                            else
+                            {
+                                Console.WriteLine("Failed to make sale.");
+                            }
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                            Console.Clear();
+                        }
+                        else if (select == "4")
+                        {
+                            break;
+                        }
+                        else
+                        {
+                            Console.WriteLine("Invalid choice. Please try again.");
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                    }
+                }
+                else if (choice == "3")
+                {
+                    while (true)
+                    {
+                        inventoryManager.DisplayInventory();
+                        int maxLength = inventoryManager.products.Max(p => p.Name.Length);
+                        Console.Write(@"
+                                                                                    .---------------------------------------------------------------------. 
+                                                                                    | .-----------------------------------------------------------------. |
+                                                                                    | |                            Choice                               | |
+                                                                                    | |-----------------------------------------------------------------| |
+                                                                                    | |                                                                 | |
+                                                                                    | |                     1. Filter Products by Category              | |
+                                                                                    | |                     2. Search Products                          | |                                           
+                                                                                    | |                     3. Exit                                     | |
+                                                                                    | |                                                                 | |
+                                                                                    | '-----------------------------------------------------------------' |
+                                                                                     '--------------------------------------------------------------------' ");
+                        Console.WriteLine(Environment.NewLine + Environment.NewLine);
+                        Console.Write(@"                                                                                                               Enter your Choice: ");
+                        var select = Console.ReadLine();
+                        if (select == "1")
+                        {
+                            Console.Clear();
+                            Console.Write("Enter category to filter: ");
+                            var category = Console.ReadLine();
+                            inventoryManager.PrintProductsByCategory(category);
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                        else if (select == "2")
+                        {
+                            Console.Clear();
+                            Console.Write("Enter product name to search: ");
+                            var searchName = Console.ReadLine();
+                            inventoryManager.PrintProductsBySearch(searchName);
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                        else if (select == "3")
+                        {
+                            break;
+                        }
+                        else
+                        {
+                            Console.WriteLine("Invalid choice. Please try again.");
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                    }
+                }
+                else if (choice == "4")
+                {
+                    inventoryManager.DisplaySaleHistory();
+                }
+                else if (choice == "5")
+                {
+                    while (true)
+                    {
+                        inventoryManager.DisplayInventory();
+                        int maxLength = inventoryManager.products.Max(p => p.Name.Length);
+                        Console.Write(@"
+                                                                                    .---------------------------------------------------------------------. 
+                                                                                    | .-----------------------------------------------------------------. |
+                                                                                    | |                            Choice                               | |
+                                                                                    | |-----------------------------------------------------------------| |
+                                                                                    | |                                                                 | |
+                                                                                    | |                     1. Filter Products by Category              | |
+                                                                                    | |                     2. Search Products                          | |                                           
+                                                                                    | |                     3. Remove Product                           | |
+                                                                                    | |                     4. Exit                                     | |
+                                                                                    | |                                                                 | |
+                                                                                    | '-----------------------------------------------------------------' |
+                                                                                     '--------------------------------------------------------------------' ");
+                        Console.WriteLine(Environment.NewLine + Environment.NewLine);
+                        Console.Write(@"                                                                                                               Enter your Choice: ");
+                        var select = Console.ReadLine();
+                        if (select == "1")
+                        {
+                            Console.Clear();
+                            Console.Write("Enter category to filter: ");
+                            var category = Console.ReadLine();
+                            inventoryManager.PrintProductsByCategory(category);
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                        else if (select == "2")
+                        {
+                            Console.Clear();
+                            Console.Write("Enter product name to search: ");
+                            var searchName = Console.ReadLine();
+                            inventoryManager.PrintProductsBySearch(searchName);
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                        else if (select == "3")
+                        {
+                            Console.WriteLine("Remove Product:");
+                            Console.WriteLine("---------");
+                            Console.Write("Enter product ID to remove: ");
+                            var productId = int.Parse(Console.ReadLine());
+                            if (inventoryManager.RemoveProduct(productId))
+                            {
+                                Console.WriteLine("Product removed successfully!");
+                            }
+                            else
+                            {
+                                Console.WriteLine("Failed to remove product. Product may not exist.");
+                            }
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                            Console.Clear();
+                        }
+                        else if (select == "4")
+                        {
+                            break;
+                        }
+                        else
+                        {
+                            Console.WriteLine("Invalid choice. Please try again.");
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                    }
+                }
+                else if (choice == "6")
+                {
+                    var saleIds = inventoryManager.GetAllSaleIds();
+                    Console.Clear();
+                    Console.WriteLine("Sale IDs:");
+                    Console.WriteLine("---------");
+                    if (saleIds.Any())
+                    {
+                        foreach (var saleid in saleIds)
+                        {
+                            Console.WriteLine($"Sale ID: {saleid}");
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("No sales have been made yet.");
+                    }
+                    Console.Write("Enter Sale ID to refund: ");
+                    var saleId = int.Parse(Console.ReadLine());
+                    if (inventoryManager.RefundSale(saleId))
+                    {
+                        Console.WriteLine("Refund processed successfully.");
+                    }
+                    else
+                    {
+                        Console.WriteLine("Refund failed.");
+                    }
+                    Console.WriteLine("Press any key to continue...");
+                    Console.ReadKey();
+                }
+                else if (choice == "7")
+                {
+                    break;
+                }
+                else
+                {
+                    Console.WriteLine("Invalid choice. Please try again.");
+                    Console.WriteLine("Press any key to continue...");
+                    Console.ReadKey();
+                }
+            }
+            else if (auth == 2)
+            {
+                Console.Clear();
+                var mainMenuString = @"
+                                                                                    .---------------------------------------------------------------------. 
+                                                                                    | .-----------------------------------------------------------------. |
+                                                                                    | |                            Main Menu                            | |
+                                                                                    | |-----------------------------------------------------------------| |
+                                                                                    | |                                                                 | |
+                                                                                    | |                     1. Make sale                                | |
+                                                                                    | |                     2. View inventory                           | |
+                                                                                    | |                     3. View sale history                        | |                     
+                                                                                    | |                     4. Exit                                     | |
+                                                                                    | |                                                                 | |
+                                                                                    | '-----------------------------------------------------------------' |
+                                                                                     '--------------------------------------------------------------------' ";
+                Console.WriteLine(mainMenuString + Environment.NewLine + Environment.NewLine);
+                Console.Write(@"                                                                                                               Enter your Choice: ");
+                var choice = Console.ReadLine();
+                if (choice == "1")
+                {
+                    while (true)
+                    {
+                        inventoryManager.DisplayInventory();
+                        int maxLength = inventoryManager.products.Max(p => p.Name.Length);
+                        Console.Write(@"
+                                                                                    .---------------------------------------------------------------------. 
+                                                                                    | .-----------------------------------------------------------------. |
+                                                                                    | |                            Choice                               | |
+                                                                                    | |-----------------------------------------------------------------| |
+                                                                                    | |                                                                 | |
+                                                                                    | |                     1. Filter Products by Category              | |
+                                                                                    | |                     2. Search Products                          | |
+                                                                                    | |                     3. Make Purchase                            | |                                             
+                                                                                    | |                     4. Exit                                     | |
+                                                                                    | |                                                                 | |
+                                                                                    | '-----------------------------------------------------------------' |
+                                                                                     '--------------------------------------------------------------------' ");
+                        Console.WriteLine(Environment.NewLine + Environment.NewLine);
+                        Console.Write(@"                                                                                                               Enter your Choice: ");
+                        var select = Console.ReadLine();
+                        if (select == "1")
+                        {
+                            Console.Clear();
+                            Console.Write("Enter category to filter: ");
+                            var category = Console.ReadLine();
+                            inventoryManager.PrintProductsByCategory(category);
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                        else if (select == "2")
+                        {
+                            Console.Clear();
+                            Console.Write("Enter product name to search: ");
+                            var searchName = Console.ReadLine();
+                            inventoryManager.PrintProductsBySearch(searchName);
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                        else if (select == "3")
+                        {
+                            Console.Write("Enter product ID: ");
+                            var productId = int.Parse(Console.ReadLine());
+                            Console.Write("Enter quantity: ");
+                            var quantity = int.Parse(Console.ReadLine());
+                            if (inventoryManager.MakeSale(productId, quantity))
+                            {
+                                Console.WriteLine("Sale completed successfully!");
+                            }
+                            else
+                            {
+                                Console.WriteLine("Failed to make sale.");
+                            }
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                            Console.Clear();
+                        }
+                        else if (select == "4")
+                        {
+                            break;
+                        }
+                        else
+                        {
+                            Console.WriteLine("Invalid choice. Please try again.");
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                    }
+                }
+                else if (choice == "2")
+                {
+                    while (true)
+                    {
+                        inventoryManager.DisplayInventory();
+                        int maxLength = inventoryManager.products.Max(p => p.Name.Length);
+                        Console.Write(@"
+                                                                                    .---------------------------------------------------------------------. 
+                                                                                    | .-----------------------------------------------------------------. |
+                                                                                    | |                            Choice                               | |
+                                                                                    | |-----------------------------------------------------------------| |
+                                                                                    | |                                                                 | |
+                                                                                    | |                     1. Filter Products by Category              | |
+                                                                                    | |                     2. Search Products                          | |                                           
+                                                                                    | |                     3. Exit                                     | |
+                                                                                    | |                                                                 | |
+                                                                                    | '-----------------------------------------------------------------' |
+                                                                                     '--------------------------------------------------------------------' ");
+                        Console.WriteLine(Environment.NewLine + Environment.NewLine);
+                        Console.Write(@"                                                                                                               Enter your Choice: ");
+                        var select = Console.ReadLine();
+                        if (select == "1")
+                        {
+                            Console.Clear();
+                            Console.Write("Enter category to filter: ");
+                            var category = Console.ReadLine();
+                            inventoryManager.PrintProductsByCategory(category);
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                        else if (select == "2")
+                        {
+                            Console.Clear();
+                            Console.Write("Enter product name to search: ");
+                            var searchName = Console.ReadLine();
+                            inventoryManager.PrintProductsBySearch(searchName);
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                        else if (select == "3")
+                        {
+                            break;
+                        }
+                        else
+                        {
+                            Console.WriteLine("Invalid choice. Please try again.");
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                        }
+                    }
+                }
+                else if (choice == "3")
+                {
+                    inventoryManager.DisplaySaleHistory();
+                }
+                else if (choice == "4")
+                {
+                    break;
+                }
+                else
+                {
+                    Console.WriteLine("Invalid choice. Please try again.");
+                    Console.WriteLine("Press any key to continue...");
+                    Console.ReadKey();
+                }
+            }
+        }
+    }
+    static string ReadPasswordFromConsole()
+    {
+        var password = "";
+        ConsoleKeyInfo info;
+        do
+        {
+            info = Console.ReadKey(true);
+            if (info.Key != ConsoleKey.Enter)
+            {
+                if (info.Key == ConsoleKey.Backspace)
+                {
+                    if (password.Length > 0)
+                    {
+                        Console.Write("\b \b");
+                        password = password.Substring(0, password.Length - 1);
+                    }
+                }
+                else
+                {
+                    Console.Write("*");
+                    password += info.KeyChar;
+                }
+            }
+        }
+        while (info.Key != ConsoleKey.Enter);
+        return password;
+    }
+}
